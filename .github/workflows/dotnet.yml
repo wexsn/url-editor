@@ -1,0 +1,121 @@
+name: Build and Release for Windows
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        architecture: [x64, x86]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        shell: pwsh
+        run: dotnet restore
+
+      - name: Build project for Windows ${{ matrix.architecture }}
+        shell: pwsh
+        run: dotnet publish -c Release -r win-${{ matrix.architecture }} --self-contained -o ./build/${{ matrix.architecture }}
+
+      - name: Archive build for Windows ${{ matrix.architecture }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          Get-ChildItem -Path ./build/${{ matrix.architecture }} | Where-Object {$_.Name -ne "URLEditor.pdb"} | Compress-Archive -DestinationPath ./artifacts/url-editor-${{ matrix.architecture }}.zip
+
+      - name: List artifacts folder
+        shell: pwsh
+        run: Get-ChildItem -Path ./artifacts
+
+      - name: Upload artifact for Windows ${{ matrix.architecture }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-editor-${{ matrix.architecture }}
+          path: ./artifacts/url-editor-${{ matrix.architecture }}.zip
+
+  create_release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository for tagging
+        uses: actions/checkout@v4
+
+      - name: Get current time
+        id: time
+        run: echo "datetime=$(date -u '+%Y%m%d-%H%M')" >> $GITHUB_ENV
+
+      - name: Create tag
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git tag -a "v${{ env.datetime }}" -m "Release on ${{ env.datetime }}"
+          git push origin "v${{ env.datetime }}"
+
+      - name: Download 64-bit artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: url-editor-x64
+          path: ./artifacts
+
+      - name: Download 32-bit artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: url-editor-x86
+          path: ./artifacts
+
+      - name: Calculate SHA256 for 64-bit artifact
+        id: sha256_x64
+        run: |
+          sha256=$(sha256sum ./artifacts/url-editor-x64.zip | awk '{print $1}')
+          echo "sha256_x64=$sha256" >> $GITHUB_ENV
+
+      - name: Calculate SHA256 for 32-bit artifact
+        id: sha256_x86
+        run: |
+          sha256=$(sha256sum ./artifacts/url-editor-x86.zip | awk '{print $1}')
+          echo "sha256_x86=$sha256" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2.0.7
+        with:
+          tag_name: "v${{ env.datetime }}"
+          name: "Release ${{ env.datetime }}"
+          body: |
+            Automated release of url-editor for Windows (x64 and x86) from actions, 
+            [update list >]
+            SHA256 (x64): ${{ env.sha256_x64 }}
+            SHA256 (x86): ${{ env.sha256_x86 }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload 64-bit artifact to release
+        uses: softprops/action-gh-release@v2.0.7
+        with:
+          tag_name: "v${{ env.datetime }}"
+          files: ./artifacts/url-editor-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload 32-bit artifact to release
+        uses: softprops/action-gh-release@v2.0.7
+        with:
+          tag_name: "v${{ env.datetime }}"
+          files: ./artifacts/url-editor-x86.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
